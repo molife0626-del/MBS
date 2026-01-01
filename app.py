@@ -2,17 +2,16 @@ import streamlit as st
 import pandas as pd
 
 # ---------------------------------------------------------
-# タイトルと説明
+# タイトル
 # ---------------------------------------------------------
 st.title('📦 出荷重量計算アプリ')
-st.write('製品（ポリ/ケース）とパレットを選択して、出荷時の総重量を計算します。')
 
 # ---------------------------------------------------------
-# 1. マスタデータの読み込み（1つのファイルから複数シートを読む）
+# 1. マスタデータの読み込み
 # ---------------------------------------------------------
 @st.cache_data
 def load_data():
-    file_path = 'master_data.xlsx'  # ファイル名を指定
+    file_path = 'master_data.xlsx'
     try:
         # シート名を指定して読み込む
         df_products = pd.read_excel(file_path, sheet_name='製品マスター')
@@ -20,90 +19,114 @@ def load_data():
         return df_products, df_pallets
     except FileNotFoundError:
         return None, None
-    except ValueError as e:
-        # シート名が見つからない場合などのエラー
-        st.error(f"読み込みエラー: {e}")
+    except Exception as e:
         return None, None
 
 df_products, df_pallets = load_data()
 
-# エラー処理
 if df_products is None or df_pallets is None:
-    st.error("エラー: 'master_data.xlsx' が見つからないか、シート名が間違っています。")
-    st.info("Excelファイル名が 'master_data.xlsx' であること、シート名が '製品マスター' と 'パレットマスター' であることを確認してください。")
+    st.error("エラー: 'master_data.xlsx' が読み込めません。GitHubにファイルがあるか確認してください。")
     st.stop()
 
 # ---------------------------------------------------------
-# 2. 入力フォームの作成
+# タブで機能を切り替え
 # ---------------------------------------------------------
+tab1, tab2 = st.tabs(["📄 個別入力で計算", "📂 ファイル一括アップロード"])
 
-st.header('1. 製品の選択')
+# =========================================================
+# タブ1：個別入力モード（これまでの機能）
+# =========================================================
+with tab1:
+    st.header('製品と数量を指定')
+    
+    # 製品選択
+    selected_product_name = st.selectbox(
+        '製品名を選択',
+        df_products['品名'],
+        key='tab1_product' # タブごとの動作を分けるためのキー
+    )
+    
+    # データ取得
+    product_row = df_products[df_products['品名'] == selected_product_name].iloc[0]
+    unit_weight = product_row['1ポリ重量']
+    
+    st.info(f"1ポリ重量: {unit_weight} kg")
+    
+    # 数量入力
+    quantity = st.number_input('数量（ポリ数）', min_value=1, value=10, step=1, key='tab1_qty')
+    
+    # 製品重量の計算
+    products_weight_sum = unit_weight * quantity
 
-# 製品を選ぶ（B列の「品名」を表示）
-# 実際のデータに合わせて列名を指定します
-selected_product_name = st.selectbox(
-    '製品名を選択してください',
-    df_products['品名']
+# =========================================================
+# タブ2：一括アップロードモード（新機能）
+# =========================================================
+with tab2:
+    st.header('リストから一括計算')
+    st.write('A列に「型番」、B列に「数量」が入力されたExcelをアップロードしてください。')
+
+    # ファイルアップローダー
+    uploaded_file = st.file_uploader("Excelファイルをドラッグ＆ドロップ", type=['xlsx'])
+    
+    products_weight_sum = 0 # 初期化
+    
+    if uploaded_file is not None:
+        try:
+            # アップロードされたファイルを読み込む
+            df_upload = pd.read_excel(uploaded_file)
+            
+            # 列名のチェック（A列、B列のタイトルが違っても動くように1列目、2列目として扱います）
+            # 1列目を「型番」、2列目を「数量」としてリネームして処理
+            df_upload.columns = ['型番', '数量'] + list(df_upload.columns[2:])
+            
+            # マスタデータと結合（VLOOKUPのような処理）
+            # アップロードの「型番」とマスタの「品名」を突き合わせる
+            df_merged = pd.merge(df_upload, df_products, left_on='型番', right_on='品名', how='left')
+            
+            # 重量計算（数量 × 1ポリ重量）
+            df_merged['小計重量'] = df_merged['数量'] * df_merged['1ポリ重量']
+            
+            # 画面に表を表示（確認用）
+            st.dataframe(df_merged[['型番', '数量', '1ポリ重量', '小計重量']])
+            
+            # エラーチェック：マスタにない製品があった場合
+            if df_merged['1ポリ重量'].isnull().any():
+                unknown_products = df_merged[df_merged['1ポリ重量'].isnull()]['型番'].tolist()
+                st.error(f"以下の製品がマスタに見つかりませんでした: {unknown_products}")
+            else:
+                # 製品合計重量の算出
+                products_weight_sum = df_merged['小計重量'].sum()
+                st.success(f"リストの製品合計: {products_weight_sum:.2f} kg")
+                
+        except Exception as e:
+            st.error(f"ファイル読み込みエラー: {e}")
+
+# =========================================================
+# 共通：パレット選択と最終計算
+# =========================================================
+st.markdown("---")
+st.header('🎨 パレットの選択')
+st.caption("※ 上記で計算された製品を載せるパレットを選んでください")
+
+# パレット選択
+selected_pallet_name = st.selectbox(
+    '使用するパレット',
+    df_pallets['パレット名'],
+    key='common_pallet'
 )
 
-# 選択された製品の情報を取得
-# 該当する行をフィルタリング
-product_row = df_products[df_products['品名'] == selected_product_name].iloc[0]
+pallet_row = df_pallets[df_pallets['パレット名'] == selected_pallet_name].iloc[0]
+pallet_weight = pallet_row['重量kg']
 
-# G列「1ポリ重量」と D列「入り数」を取得
-# ※Excelの列ヘッダーの文字と完全に一致させる必要があります
-unit_weight = product_row['1ポリ重量'] 
-items_per_pack = product_row['入り数']
+# 最終計算（どちらのタブを使っていても、計算された products_weight_sum を使う）
+total_weight = products_weight_sum + pallet_weight
 
-# ユーザーへの情報表示
-st.info(f"情報: 1ポリあたりの入り数 = {items_per_pack} 個 / 重量 = {unit_weight} kg")
-
-# 数量入力
-# G列が「1ポリ重量」なので、ここでの入力は「ポリ数（ケース数）」とします
-quantity = st.number_input('出荷する数量（ポリ/ケース数）を入力してください', min_value=1, value=10, step=1)
-
-
-st.header('2. パレットの選択')
-
-# パレットを選ぶ
-# パレットマスター側の列名も確認してください（ここでは仮に「パレット名」「重量kg」としています）
-# もしExcel側の列名が違う場合は、ここの文字を変更してください
-try:
-    selected_pallet_name = st.selectbox(
-        '使用するパレットを選択してください',
-        df_pallets['パレット名']
-    )
-    pallet_row = df_pallets[df_pallets['パレット名'] == selected_pallet_name].iloc[0]
-    pallet_weight = pallet_row['重量kg']
-    
-    st.info(f"パレット重量: {pallet_weight} kg")
-
-except KeyError:
-    st.error("エラー: パレットマスターの列名がコードと一致していません。「パレット名」「重量kg」という列を作ってください。")
-    st.stop()
-
-# ---------------------------------------------------------
-# 3. 計算と結果表示
-# ---------------------------------------------------------
-st.markdown('---')
-
-# 計算ロジック
-# 総重量 = (1ポリ重量 × ポリ数) + パレット重量
-products_total_weight = unit_weight * quantity
-total_weight = products_total_weight + pallet_weight
-
-st.header('📊 計算結果')
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.metric("製品重量 (合計)", f"{products_total_weight:.2f} kg")
-    st.caption(f"{unit_weight}kg × {quantity}ポリ")
-
-with col2:
+# 結果表示
+st.header('📊 最終計算結果')
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric("製品重量", f"{products_weight_sum:.2f} kg")
+with c2:
     st.metric("パレット重量", f"{pallet_weight:.2f} kg")
-
-with col3:
-    st.metric("出荷総重量", f"{total_weight:.2f} kg", delta_color="normal")
-
-st.success("計算が完了しました！")
+with c3:
+    st.metric("出荷総重量", f"{total_weight:.2f} kg")
